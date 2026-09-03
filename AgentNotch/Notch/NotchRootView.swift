@@ -33,7 +33,7 @@ struct NotchRootView: View {
             let rect = layout.cellRect(index)
             ProviderCell(
                 id: id,
-                status: model.store.status(for: id),
+                status: model.status(for: id),
                 spinTurns: model.spinTurns[id] ?? 0
             )
             .frame(width: rect.width, height: rect.height)
@@ -67,13 +67,17 @@ struct NotchRootView: View {
     /// Expanded: the head off the body's start, revealed exactly like the orb at the other end.
     private func peekHead(_ layout: NotchLayout) -> some View {
         let rect = layout.headRect
-        // Two points of slack on each side for the waiting nudge, which swells the disc.
+        // Room for a clip's rings past the disc; the click target stays the disc plus two points
+        // of slack on each side, as the waiting nudge swells it.
+        let side = PeekClip.side
         return PeekView(model: model, layout: layout, style: .head, paused: !model.isExpanded)
-            .frame(width: rect.width + 4, height: rect.height + 4)
+            .frame(width: side, height: side)
+            .contentShape(Circle().inset(by: (side - rect.width) / 2 - 2))
+            .onTapGesture { model.headClicked() }
             .position(x: rect.midX, y: rect.midY)
             .scaleEffect(model.isExpanded ? 1 : 0.3, anchor: layout.edge.anchorAtEdge)
             .opacity(model.isExpanded ? 1 : 0)
-            .allowsHitTesting(false)
+            .allowsHitTesting(model.isExpanded)
     }
 
     @ViewBuilder
@@ -82,7 +86,7 @@ struct NotchRootView: View {
             let rect = layout.tooltipRect(for: index)
             TooltipCard(
                 id: id,
-                status: model.store.status(for: id),
+                status: model.status(for: id),
                 direction: layout.tooltipDirection,
                 tailCenter: layout.tooltipTailCenter(for: index)
             )

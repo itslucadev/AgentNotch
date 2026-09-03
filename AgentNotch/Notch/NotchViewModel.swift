@@ -40,14 +40,27 @@ final class NotchViewModel {
     @ObservationIgnored private(set) var peekBlinkAt: TimeInterval?
     @ObservationIgnored private(set) var peekCue: PeekCue?
     @ObservationIgnored private(set) var peekCueStart: TimeInterval?
+    /// An authored clip drawn in place of the head. Exclusive with `peekCue`: a beat is one or the other.
+    @ObservationIgnored private(set) var peekClip: PeekClip?
+    @ObservationIgnored private(set) var peekClipStart: TimeInterval?
 
     /// True while a limit notification owns expand/hover, so the pointer cannot collapse it.
     private(set) var isNotifying = false
+    /// Temporary readings used while a preview or live notification is on screen.
+    private var previewStatuses: [ProviderID: ProviderStatus] = [:]
 
     /// The loudest mood any visible provider justifies. Peek reacts to nothing else.
     var mood: PeekMood {
-        providers.map { PeekMood(status: store.status(for: $0)) }.max() ?? .idle
+        providers.map { PeekMood(status: status(for: $0)) }.max() ?? .idle
     }
+
+    func status(for id: ProviderID) -> ProviderStatus {
+        previewStatuses[id] ?? store.status(for: id)
+    }
+
+    /// Mood at the last change seen, so the next change can pick its cue.
+    private var lastMood: PeekMood = .idle
+    private var moodCueWork: Task<Void, Never>?
 
     private var foldWork: Task<Void, Never>?
     private var unhoverWork: Task<Void, Never>?
@@ -74,6 +87,87 @@ final class NotchViewModel {
         store.onLimitEvents = { [weak self] events in
             self?.handleLimitEvents(events)
         }
+        lastMood = mood
+        watchMood()
+    }
+
+    // MARK: Mood cues
+
+    /// Re-arms after every change: `withObservationTracking` fires once, before the new value lands,
+    /// so the check runs on the next main-actor turn.
+    private func watchMood() {
+        withObservationTracking {
+            _ = mood
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.moodDidChange()
+                self.watchMood()
+            }
+        }
+    }
+
+    private func moodDidChange() {
+        let current = mood
+        defer { lastMood = current }
+        if let clip = PeekClip.onMoodChange(from: lastMood, to: current), playMoodClip(clip) {
+            return
+        }
+        guard let cue = PeekCue.onMoodChange(from: lastMood, to: current) else { return }
+        playMoodCue(cue)
+    }
+
+    /// Plays a beat wherever the face is right now; unlike a limit notification it never opens
+    /// the notch. A notification in progress owns the cue and wins.
+    private func playMoodCue(_ cue: PeekCue) {
+        guard !isNotifying, preferences.notchVisibility != .hidden else { return }
+        clearBeat()
+        peekCue = cue
+        peekCueStart = Date().timeIntervalSinceReferenceDate
+        scheduleBeatEnd(after: cue.duration)
+    }
+
+    /// Same contract as `playMoodCue` for an authored clip. False when the clip is not in the
+    /// bundle, so the caller can fall back to a computed cue.
+    @discardableResult
+    private func playMoodClip(_ clip: PeekClip) -> Bool {
+        guard !isNotifying, preferences.notchVisibility != .hidden else { return true }
+        guard let frames = PeekClipLibrary.frames(for: clip) else { return false }
+        clearBeat()
+        peekClip = clip
+        peekClipStart = Date().timeIntervalSinceReferenceDate
+        scheduleBeatEnd(after: frames.duration)
+        return true
+    }
+
+    private func scheduleBeatEnd(after seconds: TimeInterval) {
+        moodCueWork = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled, let self else { return }
+            self.clearBeat()
+            self.moodCueWork = nil
+        }
+    }
+
+    /// Stops whichever beat is playing, cue or clip, and its end timer.
+    private func clearBeat() {
+        moodCueWork?.cancel()
+        peekCue = nil
+        peekCueStart = nil
+        peekClip = nil
+        peekClipStart = nil
+    }
+
+    /// The one Easter egg: a click on the head.
+    func headClicked() {
+        playMoodCue(.boop)
+    }
+
+    /// Post `previewClip` with the clip's raw value, or hold Option on the status item menu.
+    func previewClip(_ clip: PeekClip) {
+        guard preferences.notchVisibility != .hidden else { return }
+        cancelNotification(restore: false)
+        playMoodClip(clip)
     }
 
     var providers: [ProviderID] { preferences.visibleProviders }
@@ -246,8 +340,9 @@ final class NotchViewModel {
 
     /// Hold Option on the status item menu to fire these, or post `previewLimit`.
     func previewLimitNotification(_ kind: LimitEvent.Kind) {
-        guard let id = providers.first else { return }
+        guard preferences.notchVisibility != .hidden, let id = providers.first else { return }
         cancelNotification(restore: false)
+        installPreview(kind, for: id)
         handleLimitEvents(
             [LimitEvent(provider: id, windowID: "debug", kind: kind)], replaceQueue: true)
     }
@@ -285,6 +380,8 @@ final class NotchViewModel {
             notificationRestore = (isExpanded, hoveredProvider, isOrbHovered)
         }
         isNotifying = true
+        clearBeat()
+        moodCueWork = nil
         foldWork?.cancel()
         unhoverWork?.cancel()
         foldWork = nil
@@ -297,13 +394,18 @@ final class NotchViewModel {
         isExpanded = true
         hoveredProvider = event.provider
         isOrbHovered = false
-        peekCue = event.kind == .exhausted ? .exhausted : .reset
-        if wasCollapsed {
-            peekCueStart = nil
+        // A reset plays the authored clip, and the notch stays open until it ends. Exhausted keeps
+        // the computed cue; so does a reset if the clip is missing from the bundle.
+        let clip: PeekClip? = event.kind == .reset ? .reset : nil
+        let frames = clip.flatMap { PeekClipLibrary.frames(for: $0) }
+        let hold: Duration = frames.map { .seconds($0.duration + 0.3) } ?? Self.notificationHold
+        if frames != nil {
+            peekClip = clip
         } else {
-            let now = Date().timeIntervalSinceReferenceDate
-            peekCueStart = now
-            peekBlinkAt = now
+            peekCue = event.kind == .exhausted ? .exhausted : .reset
+        }
+        if !wasCollapsed {
+            startBeat(at: Date().timeIntervalSinceReferenceDate)
         }
 
         notificationWork = Task { @MainActor [weak self] in
@@ -311,14 +413,11 @@ final class NotchViewModel {
             if wasCollapsed {
                 try? await Task.sleep(for: Self.notificationExpandDelay)
                 guard !Task.isCancelled else { return }
-                let now = Date().timeIntervalSinceReferenceDate
-                self.peekCueStart = now
-                self.peekBlinkAt = now
+                self.startBeat(at: Date().timeIntervalSinceReferenceDate)
             }
-            try? await Task.sleep(for: Self.notificationHold)
+            try? await Task.sleep(for: hold)
             guard !Task.isCancelled else { return }
-            self.peekCue = nil
-            self.peekCueStart = nil
+            self.clearBeat()
             self.notificationWork = nil
             if self.notificationQueue.isEmpty {
                 self.endNotification()
@@ -328,10 +427,16 @@ final class NotchViewModel {
         }
     }
 
+    /// Starts whichever beat the notification set, with a blink so the face lands with it.
+    private func startBeat(at now: TimeInterval) {
+        if peekClip != nil { peekClipStart = now } else { peekCueStart = now }
+        peekBlinkAt = now
+    }
+
     private func endNotification() {
         isNotifying = false
-        peekCue = nil
-        peekCueStart = nil
+        clearBeat()
+        previewStatuses.removeAll()
         if let restore = notificationRestore {
             isExpanded = restore.expanded
             hoveredProvider = restore.hover
@@ -345,11 +450,12 @@ final class NotchViewModel {
     }
 
     private func cancelNotification(restore: Bool) {
+        clearBeat()
+        moodCueWork = nil
         notificationWork?.cancel()
         notificationWork = nil
         notificationQueue.removeAll()
-        peekCue = nil
-        peekCueStart = nil
+        previewStatuses.removeAll()
         if restore {
             endNotification()
         } else {
@@ -357,4 +463,39 @@ final class NotchViewModel {
             notificationRestore = nil
         }
     }
+
+    /// Builds a fake reading from the last live snapshot so previews show 100% or a fresh window.
+    private func installPreview(_ kind: LimitEvent.Kind, for id: ProviderID) {
+        let live = store.status(for: id).snapshot
+        let windows: [LimitWindow]
+        if let live, !live.windows.isEmpty {
+            windows = live.windows.enumerated().map { index, window in
+                var window = window
+                if kind == .exhausted {
+                    window.usedFraction = index == 0 ? 1.0 : min(max(window.usedFraction, 0.74), 0.97)
+                } else {
+                    window.usedFraction = 0.03 + Double(index) * 0.04
+                }
+                return window
+            }
+        } else {
+            let resets = Date().addingTimeInterval(kind == .exhausted ? 3_600 : 18_000)
+            windows = [
+                LimitWindow(
+                    id: "session", label: "Current session",
+                    usedFraction: kind == .exhausted ? 1.0 : 0.04, resetsAt: resets)
+            ]
+        }
+        let sessions = (live?.sessions ?? []).map { session in
+            var session = session
+            session.activity = .idle
+            return session
+        }
+        previewStatuses[id] = .ready(
+            ProviderSnapshot(
+                id: id, account: live?.account, plan: live?.plan, windows: windows, sessions: sessions,
+                fetchedAt: Date()),
+            stale: false)
+    }
+
 }

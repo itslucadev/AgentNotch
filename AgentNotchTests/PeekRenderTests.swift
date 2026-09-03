@@ -79,6 +79,20 @@ struct PeekRenderTests {
         #expect(try brightPixels(in: image, rect: layout.pillRect) == 0, "the pill's eyes are hidden while expanded")
     }
 
+    @Test func aPlayingClipReplacesTheHead() async throws {
+        let model = await makeModel(
+            visibility: .alwaysShow, provider: StubProvider(id: .claude, outcome: .failure(.unavailable("x"))))
+        model.previewClip(.notification)
+        #expect(model.peekClip == .notification)
+        let image = try render(model, named: "expanded-clip")
+        let layout = model.layout
+        let eyes = try brightPixels(in: image, rect: layout.headRect)
+        // The clip's first frame has the bot's full open eyes: about 3 400 px at 320, so around
+        // 750 px once the 203 px body sits on the 48 pt disc at 2x. The squinted `failed` face
+        // the clip covers would leave ~200.
+        #expect(eyes > 450, "clip eyes in the head: \(eyes) bright pixels")
+    }
+
     @Test func collapsedNotchShowsEyesInThePill() async throws {
         let model = await makeModel(
             visibility: .onHover, provider: StubProvider(id: .claude, outcome: .failure(.unavailable("x"))))

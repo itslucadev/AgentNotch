@@ -66,6 +66,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 withTitle: "Preview Limit Reset",
                 action: #selector(previewReset), keyEquivalent: ""
             ).target = self
+            menu.addItem(
+                withTitle: "Preview Credits Low Clip",
+                action: #selector(previewCreditsLow), keyEquivalent: ""
+            ).target = self
+            menu.addItem(
+                withTitle: "Preview Notification Clip",
+                action: #selector(previewNotificationClip), keyEquivalent: ""
+            ).target = self
         }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Agent Notch", action: #selector(quit), keyEquivalent: "q")
@@ -90,6 +98,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func quit() { actions.quit() }
     @objc private func previewExhausted() { actions.previewLimit(.exhausted) }
     @objc private func previewReset() { actions.previewLimit(.reset) }
+    @objc private func previewCreditsLow() { actions.previewClip(.creditsLow) }
+    @objc private func previewNotificationClip() { actions.previewClip(.notification) }
 
     /// Template image: a small side notch hugging the right edge of the icon.
     private static let icon: NSImage = {

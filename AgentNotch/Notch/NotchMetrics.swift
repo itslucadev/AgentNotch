@@ -6,9 +6,9 @@ nonisolated enum NotchMetrics {
     static let thickness: CGFloat = 70
     /// Body thickness when cells sit side by side (top / bottom): ring plus label plus the same 13pt margins.
     static let barThickness: CGFloat = 97
-    static let cornerRadius: CGFloat = 26
-    /// Concave fillet where the body meets the screen edge, like a hardware notch's ears.
-    static let earRadius: CGFloat = 26
+    static let cornerRadius: CGFloat = 32
+    /// Concave fillet where the body meets the screen edge. Same radius as the settings arc.
+    static let earRadius: CGFloat = 32
 
     static let ringDiameter: CGFloat = 44
     static let ringLineWidth: CGFloat = 3
@@ -53,9 +53,10 @@ nonisolated enum NotchMetrics {
     static let orbEdgeInset: CGFloat = 37
     static let arcRadius: CGFloat = 32
     static let arcLineWidth: CGFloat = 6
-    /// Arc centre inset from the screen edge and its drop past the body end.
+    /// Arc centre inset from the screen edge.
     static let arcEdgeInset: CGFloat = 41.5
-    static let arcDrop: CGFloat = 5
+    /// Start of the settings arc past the body: same clearance as the mascot, plus the round cap.
+    static let arcDrop: CGFloat = orbGap + arcLineWidth / 2
 
     /// Room kept past both body ends for ears, the orb and tooltips that overhang.
     static let endMargin: CGFloat = 140

@@ -86,13 +86,48 @@ nonisolated struct PeekFrame: Sendable, Equatable {
     var opacity: Double
 }
 
-/// One-shot beat Peek plays when a limit window dies or comes back. Distinct from mood: mood is
-/// how the face lives; a cue is a short performance on top, then mood resumes.
+/// One-shot beat Peek plays on top of a mood: a limit window dying or coming back, a session
+/// turning to the user, a job finishing, a click on the head. Distinct from mood: mood is how the
+/// face lives; a cue is a short performance on top, then mood resumes.
 nonisolated enum PeekCue: Equatable, Sendable, CaseIterable {
+    /// Credits ran out: shock flash, lids slam, sleep.
     case exhausted
+    /// Credits came back: pop awake, look around.
     case reset
+    /// A session waits for the user: look into the screen, two nudges.
+    case hey
+    /// A working session finished: one slow blink, eyes open wide, small glance up.
+    case phew
+    /// A window turned critical: glance down at the ring that went orange, back.
+    case uhOh
+    /// The tool signed out: a blink hides the gaze turning to the edge.
+    case lookAway
+    /// The head was clicked: a happy squeeze.
+    case boop
 
-    var duration: TimeInterval { 1.55 }
+    var duration: TimeInterval {
+        switch self {
+        case .exhausted, .reset: 1.55
+        case .hey: 1.3
+        case .phew: 0.7
+        case .uhOh: 0.9
+        case .lookAway: 0.55
+        case .boop: 0.5
+        }
+    }
+
+    /// The beat a mood change deserves, if any. Exhausted and reset are limit notifications with
+    /// their own trigger, so they never come from here.
+    static func onMoodChange(from previous: PeekMood, to mood: PeekMood) -> PeekCue? {
+        guard previous != mood, previous != .exhausted, mood != .exhausted else { return nil }
+        switch mood {
+        case .waiting: return .hey
+        case .critical: return .uhOh
+        case .needsAuth: return .lookAway
+        case .idle where previous == .working: return .phew
+        default: return nil
+        }
+    }
 
     struct Pose: Sendable {
         var open: CGFloat? = nil
@@ -101,13 +136,23 @@ nonisolated enum PeekCue: Equatable, Sendable, CaseIterable {
         var sag: CGFloat = 0
         var swell: CGFloat = 0
         var openMultiplier: CGFloat = 1
+        /// Gaze pushed into the screen, on top of the mood's own lean.
+        var lean: CGFloat = 0
+        /// Gaze pushed toward the body, along the resting bias.
+        var toward: CGFloat = 0
+        /// Eye width multiplier; a squeezed happy eye is wider than tall.
+        var stretch: CGFloat = 1
     }
 
     func pose(at u: TimeInterval, reducedMotion: Bool) -> Pose {
-        if reducedMotion { return quietPose(at: u) }
         switch self {
-        case .exhausted: return Self.exhaustedPose(at: u)
-        case .reset: return Self.resetPose(at: u)
+        case .exhausted: return reducedMotion ? quietPose(at: u) : Self.exhaustedPose(at: u)
+        case .reset: return reducedMotion ? quietPose(at: u) : Self.resetPose(at: u)
+        case .hey: return Self.heyPose(at: u).quieted(reducedMotion)
+        case .phew: return Self.phewPose(at: u).quieted(reducedMotion)
+        case .uhOh: return Self.uhOhPose(at: u).quieted(reducedMotion)
+        case .lookAway: return Self.lookAwayPose(at: u)
+        case .boop: return Self.boopPose(at: u).quieted(reducedMotion)
         }
     }
 
@@ -156,6 +201,98 @@ nonisolated enum PeekCue: Equatable, Sendable, CaseIterable {
         }
         let p = CGFloat(min((u - 1.1) / 0.45, 1))
         return Pose(open: 1, lid: 1, swell: 0.3 * (1 - p))
+    }
+
+    /// Snap the gaze into the screen, then two nudges, then ease back onto the waiting loop's lean.
+    private static func heyPose(at u: TimeInterval) -> Pose {
+        if u < 0.12 {
+            let k = CGFloat(PeekLife.easeInOut(u / 0.12))
+            return Pose(lid: 1, lean: 0.8 * k)
+        }
+        for (start, end) in [(0.15, 0.6), (0.7, 1.15)] where u >= start && u < end {
+            let k = CGFloat(sin(.pi * (u - start) / (end - start)))
+            return Pose(lid: 1, swell: 3.2 * k, openMultiplier: 1 + 0.35 * k, lean: 0.8 + 0.8 * k)
+        }
+        if u < 1.15 {
+            return Pose(lid: 1, lean: 0.8)
+        }
+        let k = CGFloat(PeekLife.easeInOut(min((u - 1.15) / 0.15, 1)))
+        return Pose(lid: 1, lean: 0.8 * (1 - k))
+    }
+
+    /// Still narrowed from working, one slow blink, then the eyes open past normal and settle.
+    private static func phewPose(at u: TimeInterval) -> Pose {
+        let narrowed = PeekMood.working.traits.open
+        if u < 0.2 {
+            return Pose(open: narrowed, lid: 1)
+        }
+        if u < 0.4 {
+            let k = CGFloat((u - 0.2) / 0.2)
+            return Pose(open: narrowed, lid: 1 - k)
+        }
+        if u < 0.6 {
+            let k = CGFloat(PeekLife.easeInOut((u - 0.4) / 0.2))
+            return Pose(open: narrowed + (1.15 - narrowed) * k, lid: k, sag: -1.5 * k)
+        }
+        let k = CGFloat(PeekLife.easeInOut(min((u - 0.6) / 0.1, 1)))
+        return Pose(open: 1.15 - 0.15 * k, lid: 1, sag: -1.5 * (1 - k))
+    }
+
+    /// Eyes widen and glance at the body, hold on the ring, then a blink covers the settle.
+    private static func uhOhPose(at u: TimeInterval) -> Pose {
+        let drowsy = PeekMood.critical.traits.open
+        if u < 0.15 {
+            let k = CGFloat(PeekLife.easeInOut(u / 0.15))
+            return Pose(open: drowsy + (1.15 - drowsy) * k, lid: 1, toward: 3 * k)
+        }
+        if u < 0.55 {
+            return Pose(open: 1.15, lid: 1, toward: 3)
+        }
+        let k = CGFloat(PeekLife.easeInOut(min((u - 0.55) / 0.35, 1)))
+        let blink = u < 0.75 ? abs(CGFloat((u - 0.55) / 0.2) * 2 - 1) : 1
+        return Pose(open: 1.15 - (1.15 - drowsy) * k, lid: blink, toward: 3 * (1 - k))
+    }
+
+    /// Hold the gaze where it was, blink, and let the mood's lean toward the edge take over
+    /// behind the closed lid.
+    private static func lookAwayPose(at u: TimeInterval) -> Pose {
+        let lean = -PeekMood.needsAuth.traits.lean
+        if u < 0.1 {
+            return Pose(lid: 1, lean: lean)
+        }
+        if u < 0.3 {
+            let k = CGFloat((u - 0.1) / 0.2)
+            return Pose(lid: abs(k * 2 - 1), lean: lean * (1 - k))
+        }
+        return Pose(lid: 1)
+    }
+
+    /// A tiny pop, then the eyes squeeze into wide happy slits, hold, and relax.
+    private static func boopPose(at u: TimeInterval) -> Pose {
+        if u < 0.08 {
+            return Pose(lid: 1, openMultiplier: 1.1)
+        }
+        if u < 0.2 {
+            let k = CGFloat(PeekLife.easeInOut((u - 0.08) / 0.12))
+            return Pose(lid: 1 - 0.85 * k, swell: 1.5 * k, stretch: 1 + 0.35 * k)
+        }
+        if u < 0.38 {
+            return Pose(lid: 0.15, swell: 1.5, stretch: 1.35)
+        }
+        let k = CGFloat(PeekLife.easeInOut(min((u - 0.38) / 0.12, 1)))
+        return Pose(lid: 0.15 + 0.85 * k, swell: 1.5 * (1 - k), stretch: 1.35 - 0.35 * k)
+    }
+}
+
+nonisolated extension PeekCue.Pose {
+    /// Reduced motion keeps lids and gaze and drops what moves the head or distorts the eyes.
+    func quieted(_ reduced: Bool) -> PeekCue.Pose {
+        guard reduced else { return self }
+        var pose = self
+        pose.swell = 0
+        pose.stretch = 1
+        pose.glance = 0
+        return pose
     }
 }
 
@@ -251,7 +388,11 @@ nonisolated struct PeekFace: Sendable, Equatable {
             gaze += down * cuePose.sag
             swell += cuePose.swell
             openMultiplier = cuePose.openMultiplier
+            gaze += inward * cuePose.lean
+            let biasLength = hypot(bias.dx, bias.dy)
+            if biasLength > 0 { gaze += bias * (cuePose.toward / biasLength) }
         }
+        let stretch = cuePose?.stretch ?? 1
         gaze += bias
 
         func eye(_ index: Int) -> PeekEye {
@@ -259,7 +400,7 @@ nonisolated struct PeekFace: Sendable, Equatable {
             let open = openBase * squint * openMultiplier
             let wide = max(open, 1)
             let narrow = min(open, 1)
-            let width = metrics.eyeSize.width * wide
+            let width = metrics.eyeSize.width * wide * stretch
             let height = metrics.eyeSize.height * wide * PeekLife.blinkScale(min(lid, narrow))
             let offset = (CGFloat(index) - 0.5) * metrics.separation
             // Both eyes share one gaze vector, so clamping it keeps the pair an isometry. The

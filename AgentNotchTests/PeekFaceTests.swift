@@ -246,4 +246,84 @@ struct PeekFaceTests {
         }
         #expect(!bounced)
     }
+
+    @Test func moodChangesPickTheirCue() {
+        #expect(PeekCue.onMoodChange(from: .idle, to: .waiting) == .hey)
+        #expect(PeekCue.onMoodChange(from: .working, to: .waiting) == .hey)
+        #expect(PeekCue.onMoodChange(from: .working, to: .idle) == .phew)
+        #expect(PeekCue.onMoodChange(from: .idle, to: .critical) == .uhOh)
+        #expect(PeekCue.onMoodChange(from: .idle, to: .needsAuth) == .lookAway)
+        #expect(PeekCue.onMoodChange(from: .critical, to: .idle) == nil)
+        #expect(PeekCue.onMoodChange(from: .waiting, to: .waiting) == nil)
+        // Limit notifications own the sleep and the wake-up; a mood change never doubles them.
+        #expect(PeekCue.onMoodChange(from: .idle, to: .exhausted) == nil)
+        #expect(PeekCue.onMoodChange(from: .exhausted, to: .waiting) == nil)
+    }
+
+    @Test(arguments: [PeekCue.hey, .phew, .uhOh, .lookAway, .boop])
+    func cueHandsBackNeutral(cue: PeekCue) {
+        for reduced in [false, true] {
+            let end = cue.pose(at: cue.duration - 0.0005, reducedMotion: reduced)
+            #expect(end.lid > 0.99, "\(cue) lid")
+            #expect(abs(end.lean) < 0.01, "\(cue) lean")
+            #expect(abs(end.toward) < 0.01, "\(cue) toward")
+            #expect(abs(end.sag) < 0.01, "\(cue) sag")
+            #expect(abs(end.swell) < 0.01, "\(cue) swell")
+            #expect(abs(end.stretch - 1) < 0.01, "\(cue) stretch")
+            #expect(abs(end.openMultiplier - 1) < 0.01, "\(cue) openMultiplier")
+        }
+    }
+
+    @Test func boopSqueezesIntoWideSlits() {
+        var face = Self.headFace
+        face.cue = .boop
+        face.cueStart = 20
+        let rest = Self.headFace.sample(at: 20.3)
+        let squeezed = face.sample(at: 20.3)
+        #expect(squeezed.left.size.height < PeekMetrics.head.eyeSize.height * 0.3)
+        #expect(squeezed.left.size.width > rest.left.size.width * 1.25)
+        #expect(squeezed.swell > 1)
+        var quiet = face
+        quiet.reducedMotion = true
+        #expect(quiet.sample(at: 20.3).swell == 0)
+        #expect(quiet.sample(at: 20.3).left.size.height < PeekMetrics.head.eyeSize.height * 0.3)
+    }
+
+    @Test func heyLooksIntoTheScreenAndNudgesTwice() {
+        var face = Self.headFace
+        face.mood = .waiting
+        face.cue = .hey
+        face.cueStart = 30
+        // inward is -x for the head on the right edge.
+        #expect(face.sample(at: 30.11).left.center.x < face.sample(at: 30).left.center.x - 0.4)
+        var peaks = 0
+        var above = false
+        for step in 0...Int(PeekCue.hey.duration * 120) {
+            let swollen = face.sample(at: 30 + Double(step) / 120).swell > 2
+            if swollen, !above { peaks += 1 }
+            above = swollen
+        }
+        #expect(peaks == 2)
+    }
+
+    @Test(arguments: PeekCue.allCases)
+    func cueEyesStayInsideThePill(cue: PeekCue) {
+        let halfLength = NotchMetrics.pillLength / 2
+        let halfThickness = NotchMetrics.pillThickness / 2
+        for mood in PeekMood.allCases {
+            var face = Self.pillFace
+            face.mood = mood
+            face.cue = cue
+            face.cueStart = 0
+            for step in 0...Int(cue.duration * 60) {
+                let frame = face.sample(at: Double(step) / 60)
+                for eye in [frame.left, frame.right] {
+                    for corner in Self.corners(eye) {
+                        #expect(abs(corner.x) <= halfLength + 0.01, "\(cue) \(mood)")
+                        #expect(abs(corner.y) <= halfThickness + 0.01, "\(cue) \(mood) t=\(Double(step) / 60)")
+                    }
+                }
+            }
+        }
+    }
 }

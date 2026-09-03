@@ -110,9 +110,18 @@ struct PeekView: View {
                 reducedMotion: reduceMotion,
                 cue: model.peekCue,
                 cueStart: model.peekCueStart)
-            let frame = face.sample(at: context.date.timeIntervalSinceReferenceDate)
+            let t = context.date.timeIntervalSinceReferenceDate
+            let clipImage = style == .head ? clipFrame(at: t) : nil
+            let frame = face.sample(at: t)
             Canvas { gc, size in
                 let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                if let clipImage {
+                    // The authored bot replaces disc and eyes wholesale, body scaled to the disc.
+                    let side = PeekClip.side
+                    let rect = CGRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side)
+                    gc.draw(Image(decorative: clipImage, scale: 1), in: rect)
+                    return
+                }
                 if style == .head {
                     let d = NotchMetrics.orbDiameter + frame.swell
                     let disc = Path(ellipseIn: CGRect(x: center.x - d / 2, y: center.y - d / 2, width: d, height: d))
@@ -134,5 +143,14 @@ struct PeekView: View {
                 }
             }
         }
+    }
+
+    /// The clip frame due now, nil when none plays or the clip has not been started yet
+    /// (a notification arriving on a collapsed notch starts it once the head is out).
+    private func clipFrame(at t: TimeInterval) -> CGImage? {
+        guard let clip = model.peekClip, let start = model.peekClipStart,
+            let frames = PeekClipLibrary.frames(for: clip)
+        else { return nil }
+        return frames.image(at: t - start)
     }
 }

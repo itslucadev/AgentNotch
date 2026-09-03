@@ -8,6 +8,7 @@ struct MenuActions {
     var checkForUpdates: () -> Void
     var canCheckForUpdates: () -> Bool
     var previewLimit: (LimitEvent.Kind) -> Void
+    var previewClip: (PeekClip) -> Void
     var quit: () -> Void
 }
 
@@ -43,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             checkForUpdates: { [weak self] in self?.updater.checkForUpdates() },
             canCheckForUpdates: { [weak self] in self?.updater.canCheckForUpdates ?? false },
             previewLimit: { kind in model.previewLimitNotification(kind) },
+            previewClip: { clip in model.previewClip(clip) },
             quit: { NSApp.terminate(nil) }
         )
         model.openSettings = actions.openSettings
@@ -133,6 +135,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] note in
             let kind: LimitEvent.Kind = (note.object as? String) == "reset" ? .reset : .exhausted
             self?.notch.model.previewLimitNotification(kind)
+        }
+        center.addObserver(
+            forName: Notification.Name("app.lucabecker.AgentNotch.previewClip"),
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let raw = note.object as? String, let clip = PeekClip(rawValue: raw) else { return }
+            self?.notch.model.previewClip(clip)
         }
     }
 

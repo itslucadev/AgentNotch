@@ -79,6 +79,7 @@ struct LimitNotificationTests {
         #expect(model.isExpanded)
         #expect(model.hoveredProvider == .claude)
         #expect(model.peekCue == .exhausted)
+        #expect(model.status(for: .claude).snapshot?.headline?.band == .exhausted)
     }
 
     @Test func previewOnHoverExpandsThePill() {
@@ -93,7 +94,11 @@ struct LimitNotificationTests {
         #expect(model.isNotifying)
         #expect(model.isExpanded)
         #expect(model.hoveredProvider == .claude)
-        #expect(model.peekCue == .reset)
+        // A reset plays the authored clip; the pill was collapsed, so it starts once the head is out.
+        #expect(model.peekCue == nil)
+        #expect(model.peekClip == .reset)
+        #expect(model.peekClipStart == nil)
+        #expect((model.status(for: .claude).snapshot?.headline?.usedFraction ?? 1) < 0.1)
     }
 
     @Test func hiddenVisibilityDoesNotNotify() {
@@ -125,6 +130,26 @@ struct LimitNotificationTests {
         await waitUntilIdle(store)
         #expect(model.isNotifying)
         #expect(model.hoveredProvider == .claude)
+        #expect(model.peekCue == .exhausted)
+    }
+
+    @Test func resetOnAnOpenNotchStartsTheClipAtOnce() {
+        let defaults = makeDefaults(visibility: .alwaysShow)
+        let store = UsageStore(
+            providers: [ScriptedProvider(id: .claude, box: SnapshotBox(snapshot(0.2)))],
+            defaults: defaults)
+        let model = NotchViewModel(preferences: Preferences(defaults: defaults), store: store)
+        #expect(model.isExpanded)
+
+        model.previewLimitNotification(.reset)
+        #expect(model.isNotifying)
+        #expect(model.peekClip == .reset)
+        #expect(model.peekClipStart != nil)
+        #expect(model.peekCue == nil)
+
+        // Exhausted right after: the clip yields to the computed cue, never both at once.
+        model.previewLimitNotification(.exhausted)
+        #expect(model.peekClip == nil)
         #expect(model.peekCue == .exhausted)
     }
 }
