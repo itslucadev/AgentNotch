@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         model.openSettings = actions.openSettings
         statusItem = StatusItemController(store: store, preferences: preferences, actions: actions)
+        setupMainMenu()
         installCaptureDemoHook()
 
         applyPresence()
@@ -90,6 +91,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem.hide()
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    /// Accessory-policy apps (menu bar / hidden presence) have no automatic menu bar. Building a
+    /// real main menu here means the app's name and a working Quit item appear whenever any of our
+    /// windows (e.g. Settings) becomes key, and Cmd+Q resolves normally through the responder chain
+    /// -- the standard pattern for LSUIElement apps that still need a reliable quit shortcut.
+    private func setupMainMenu() {
+        let appName = ProcessInfo.processInfo.processName
+        let mainMenu = NSMenu()
+
+        let appMenuItem = NSMenuItem()
+        mainMenu.addItem(appMenuItem)
+        let appMenu = NSMenu()
+        appMenuItem.submenu = appMenu
+
+        appMenu.addItem(
+            withTitle: "About \(appName)",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""
+        )
+
+        let preferencesItem = NSMenuItem(
+            title: "Preferences…",
+            action: #selector(showPreferences(_:)),
+            keyEquivalent: ","
+        )
+        preferencesItem.target = self
+        appMenu.addItem(preferencesItem)
+        appMenu.addItem(.separator())
+
+        let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        let servicesMenu = NSMenu()
+        servicesItem.submenu = servicesMenu
+        appMenu.addItem(servicesItem)
+        NSApp.servicesMenu = servicesMenu
+        appMenu.addItem(.separator())
+
+        appMenu.addItem(
+            withTitle: "Hide \(appName)",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"
+        )
+        let hideOthersItem = NSMenuItem(
+            title: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h"
+        )
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthersItem)
+        appMenu.addItem(
+            withTitle: "Show All",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""
+        )
+        appMenu.addItem(.separator())
+
+        appMenu.addItem(
+            withTitle: "Quit \(appName)",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+
+        NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func showPreferences(_ sender: Any?) {
+        settings.show()
     }
 
     private func installCheckForUpdatesMenuItem() {
@@ -141,7 +209,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] note in
-            guard let raw = note.object as? String, let clip = PeekClip(rawValue: raw) else { return }
+            guard let raw = note.object as? String, let clip = PeekClip(rawValue: raw) else {
+                return
+            }
             self?.notch.model.previewClip(clip)
         }
     }
