@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a Sparkle appcast (and delta updates) from a folder of archives.
+# Build a Sparkle appcast from a folder of archives.
 #
 # Usage:
 #   Scripts/sparkle-appcast.sh <updates-folder> [download-url-prefix]
 #
 # Put AgentNotch.zip (or .dmg) in <updates-folder>. Optional matching
 # AgentNotch.md / AgentNotch.html becomes the release notes.
-# Copy the generated files into personal-website/public/agent-notch/ and deploy.
-# The private EdDSA key lives at .sparkle/ed-private-key (gitignored).
+# The private EdDSA key is SPARKLE_ED_KEY_FILE, or .sparkle/ed-private-key.
+#
+# GitHub Releases host the zip. The website download button and
+# /agent-notch/appcast.xml both follow the latest GitHub release.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-KEY="$ROOT/.sparkle/ed-private-key"
+KEY="${SPARKLE_ED_KEY_FILE:-$ROOT/.sparkle/ed-private-key}"
 SPARKLE_VERSION="2.9.6"
 TOOLS_DIR="$ROOT/.sparkle/Sparkle-$SPARKLE_VERSION"
 
@@ -22,7 +24,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 UPDATES="$1"
-PREFIX="${2:-https://lucabecker.dev/agent-notch/}"
+PREFIX="${2:-https://github.com/itslucadev/AgentNotch/releases/latest/download/}"
 
 if [[ ! -f "$KEY" ]]; then
   echo "missing Sparkle private key: $KEY" >&2
@@ -70,8 +72,8 @@ args=(
 "$generate_appcast" "${args[@]}" "$UPDATES"
 
 echo
-echo "Copy appcast.xml, the archive, and any .delta files to"
-echo "  ~/Developer/personal-website/public/agent-notch/"
-echo "then deploy lucabecker.dev."
-echo "The running app reads: https://lucabecker.dev/agent-notch/appcast.xml"
-echo "Bump CURRENT_PROJECT_VERSION in the Xcode target before the next publish."
+echo "Appcast written in $UPDATES"
+echo "Upload AgentNotch.zip and appcast.xml to the GitHub release."
+echo "The running app reads https://lucabecker.dev/agent-notch/appcast.xml"
+echo "which proxies the latest GitHub appcast."
+echo "Tag vX.Y and push to publish the next update."

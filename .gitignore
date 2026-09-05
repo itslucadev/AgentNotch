@@ -6,3 +6,6 @@ xcuserdata/
 .sparkle/
 dist/
 *.profraw
+.env
+.env.*
+!.env.example

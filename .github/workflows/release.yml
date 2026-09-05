@@ -1,0 +1,156 @@
+name: Release
+
+# Push a version tag to build, notarize, Sparkle-sign, and publish.
+#   git tag v1.1
+#   git push origin v1.1
+#
+# Secrets (run Scripts/setup-release-secrets.sh once):
+#   MACOS_CERTIFICATE            base64-encoded Developer ID Application .p12
+#   MACOS_CERTIFICATE_PASSWORD   password for that .p12
+#   APPLE_API_KEY_P8             App Store Connect API key (.p8 body)
+#   APPLE_API_KEY_ID             key id
+#   APPLE_API_ISSUER             issuer UUID
+#   SPARKLE_ED_PRIVATE_KEY       contents of .sparkle/ed-private-key
+#
+# The website download button and Sparkle feed both follow GitHub latest.
+# SUFeedURL stays https://lucabecker.dev/agent-notch/appcast.xml so 1.0
+# installs keep working; the site proxies that URL to this appcast.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      TEAM_ID: K3386R8W3F
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Versions from tag
+        id: ver
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BUILD="$(date -u +%Y%m%d%H%M)"
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "build=${BUILD}"
+            echo "prefix=https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${MACOS_CERTIFICATE:?missing secret MACOS_CERTIFICATE}"
+          : "${MACOS_CERTIFICATE_PASSWORD:?missing secret MACOS_CERTIFICATE_PASSWORD}"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          echo -n "$MACOS_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
+            -T /usr/bin/xcodebuild \
+            -A
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+          echo "SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project AgentNotch.xcodeproj \
+            -scheme AgentNotch \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -archivePath "$RUNNER_TEMP/AgentNotch.xcarchive" \
+            MARKETING_VERSION="${{ steps.ver.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.ver.outputs.build }}" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp"
+
+      - name: Export Developer ID app
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/AgentNotch.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist Config/ExportOptions-DeveloperID.plist
+
+      - name: Notarize
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_API_KEY_P8:?missing secret APPLE_API_KEY_P8}"
+          : "${APPLE_API_KEY_ID:?missing secret APPLE_API_KEY_ID}"
+          : "${APPLE_API_ISSUER:?missing secret APPLE_API_ISSUER}"
+          APP="$RUNNER_TEMP/export/AgentNotch.app"
+          ZIP="$RUNNER_TEMP/AgentNotch-notary.zip"
+          KEY="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$KEY"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --key "$KEY" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$APP"
+
+      - name: Zip and sign Sparkle appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${SPARKLE_ED_PRIVATE_KEY:?missing secret SPARKLE_ED_PRIVATE_KEY}"
+          UPDATES="$RUNNER_TEMP/updates"
+          mkdir -p "$UPDATES"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/export/AgentNotch.app" \
+            "$UPDATES/AgentNotch.zip"
+          SPARKLE_ED_KEY_FILE="$RUNNER_TEMP/sparkle-ed-private-key"
+          printf '%s\n' "$SPARKLE_ED_PRIVATE_KEY" > "$SPARKLE_ED_KEY_FILE"
+          Scripts/sparkle-appcast.sh "$UPDATES" "${{ steps.ver.outputs.prefix }}"
+          mkdir -p "$RUNNER_TEMP/dist"
+          cp "$UPDATES/AgentNotch.zip" "$RUNNER_TEMP/dist/AgentNotch.zip"
+          cp "$UPDATES/appcast.xml" "$RUNNER_TEMP/dist/appcast.xml"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "${{ steps.ver.outputs.version }}" \
+            --generate-notes \
+            "$RUNNER_TEMP/dist/AgentNotch.zip" \
+            "$RUNNER_TEMP/dist/appcast.xml"
