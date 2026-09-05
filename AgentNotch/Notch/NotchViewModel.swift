@@ -127,12 +127,13 @@ final class NotchViewModel {
         scheduleBeatEnd(after: cue.duration)
     }
 
-    /// Same contract as `playMoodCue` for an authored clip. False when the clip is not in the
-    /// bundle, so the caller can fall back to a computed cue.
+    /// Same contract as `playMoodCue` for an authored clip. False when the clip cannot be seen,
+    /// missing from the bundle or the head folded away in the pill, so the caller falls back to
+    /// the computed cue, which the pill's eyes do show.
     @discardableResult
     private func playMoodClip(_ clip: PeekClip) -> Bool {
         guard !isNotifying, preferences.notchVisibility != .hidden else { return true }
-        guard let frames = PeekClipLibrary.frames(for: clip) else { return false }
+        guard isExpanded, let frames = PeekClipLibrary.frames(for: clip) else { return false }
         clearBeat()
         peekClip = clip
         peekClipStart = Date().timeIntervalSinceReferenceDate

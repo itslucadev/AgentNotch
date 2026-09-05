@@ -3,11 +3,43 @@ import Foundation
 nonisolated struct CodexLocalProvider: UsageProvider {
     var id: ProviderID { .codex }
 
+    private static let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+
     func fetch() async throws -> ProviderSnapshot {
-        try requireAuth()
+        if let live = await liveSnapshot() {
+            return live
+        }
+        return try snapshotFromRollouts()
+    }
+
+    func liveSnapshot() async -> ProviderSnapshot? {
+        guard let blob = authBlob(), let token = authToken(in: blob) else { return nil }
+        var headers = [
+            "Authorization": "Bearer \(token)",
+            "Accept": "application/json",
+        ]
+        if let accountID = authAccountID(in: blob) {
+            headers["chatgpt-account-id"] = accountID
+        }
+        do {
+            let data = try await ProviderHTTP.get(
+                url: Self.usageURL,
+                headers: headers,
+                authFailed: "Sign in to Codex to read your usage"
+            )
+            return try snapshot(from: try ProviderJSON.object(data))
+        } catch {
+            return nil
+        }
+    }
+
+    func snapshotFromRollouts() throws -> ProviderSnapshot {
         let candidates = rolloutPaths()
         guard !candidates.isEmpty else {
-            throw UsageProviderError.unavailable("Codex has not recorded a usage snapshot yet")
+            if hasAuth() {
+                throw UsageProviderError.unavailable("Codex has not recorded a usage snapshot yet")
+            }
+            throw UsageProviderError.needsAuth("Sign in to Codex to read your usage")
         }
 
         var sawReadable = false
@@ -25,19 +57,47 @@ nonisolated struct CodexLocalProvider: UsageProvider {
         if !sawReadable && sawUnreadable {
             throw UsageProviderError.unavailable("Codex's rollout could not be read")
         }
-        throw UsageProviderError.unavailable("Codex has not recorded a usage snapshot yet")
+        if hasAuth() {
+            throw UsageProviderError.unavailable("Codex has not recorded a usage snapshot yet")
+        }
+        throw UsageProviderError.needsAuth("Sign in to Codex to read your usage")
     }
 
-    private func requireAuth() throws {
+    func hasAuth() -> Bool { authToken(in: authBlob()) != nil }
+
+    func authBlob() -> Data? {
+        if let data = authFileData() { return data }
+        return try? Keychain.data(service: "Codex Auth", dataProtection: false)
+    }
+
+    func authFileData() -> Data? {
         let url = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".codex/auth.json")
-        guard let data = try? Data(contentsOf: url),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let tokens = json["tokens"] as? [String: Any], !tokens.isEmpty,
+        return try? Data(contentsOf: url)
+    }
+
+    func authToken(in data: Data?) -> String? {
+        guard let data,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        if let tokens = json["tokens"] as? [String: Any],
             let token = tokens["access_token"] as? String, !token.isEmpty
-        else {
-            throw UsageProviderError.needsAuth("Sign in to Codex to read your usage")
+        {
+            return token
         }
+        if let token = json["OPENAI_API_KEY"] as? String, !token.isEmpty {
+            return token
+        }
+        return nil
+    }
+
+    func authAccountID(in data: Data?) -> String? {
+        guard let data,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let tokens = json["tokens"] as? [String: Any],
+            let id = tokens["account_id"] as? String, !id.isEmpty
+        else { return nil }
+        return id
     }
 
     private func rolloutPaths() -> [String] {
@@ -91,7 +151,7 @@ nonisolated struct CodexLocalProvider: UsageProvider {
         }
     }
 
-    private func rateLimits(in data: Data) -> [String: Any]? {
+    func rateLimits(in data: Data) -> [String: Any]? {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         for line in lines.reversed() where line.contains("\"rate_limits\"") {
@@ -120,18 +180,22 @@ nonisolated struct CodexLocalProvider: UsageProvider {
         return nil
     }
 
-    private func snapshot(from limits: [String: Any]) throws -> ProviderSnapshot {
+    func snapshot(from limits: [String: Any]) throws -> ProviderSnapshot {
+        let nested = limits["rate_limit"] as? [String: Any] ?? limits
         var windows: [LimitWindow] = []
-        if let window = window(id: "primary", from: limits["primary"]) {
+        let primary = nested["primary_window"] ?? nested["primary"] ?? limits["primary"]
+        let secondary = nested["secondary_window"] ?? nested["secondary"] ?? limits["secondary"]
+        if let window = window(id: "primary", from: primary) {
             windows.append(window)
         }
-        if let window = window(id: "secondary", from: limits["secondary"]) {
+        if let window = window(id: "secondary", from: secondary) {
             windows.append(window)
         }
         guard !windows.isEmpty else {
             throw UsageProviderError.unavailable("Codex reported no usage windows")
         }
-        let plan = (limits["plan_type"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let plan = ((limits["plan_type"] as? String) ?? (nested["plan_type"] as? String))
+            .flatMap { $0.isEmpty ? nil : $0 }
         return ProviderSnapshot(
             id: .codex,
             account: nil,
@@ -141,14 +205,17 @@ nonisolated struct CodexLocalProvider: UsageProvider {
         )
     }
 
-    private func window(id: String, from raw: Any?) -> LimitWindow? {
+    func window(id: String, from raw: Any?) -> LimitWindow? {
         guard let object = raw as? [String: Any],
-            let used = ProviderJSON.double(object["used_percent"]),
-            let minutes = ProviderJSON.int(object["window_minutes"])
+            let used = ProviderJSON.double(object["used_percent"])
         else { return nil }
-        let resets = ProviderJSON.double(object["resets_at"]).map {
-            Date(timeIntervalSince1970: $0)
-        }
+        let minutes =
+            ProviderJSON.int(object["window_minutes"])
+            ?? ProviderJSON.int(object["window_duration_mins"])
+            ?? ProviderJSON.int(object["limit_window_seconds"]).map { $0 / 60 }
+        guard let minutes else { return nil }
+        let resetRaw = ProviderJSON.double(object["resets_at"]) ?? ProviderJSON.double(object["reset_at"])
+        let resets = resetRaw.map { Date(timeIntervalSince1970: $0) }
         return LimitWindow(
             id: id,
             label: label(minutes: minutes),

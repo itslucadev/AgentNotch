@@ -94,9 +94,9 @@ struct MoodCueTests {
         #expect(model.peekCue == .boop)
     }
 
-    @Test func enteringCriticalPlaysTheCreditsLowClip() async {
+    @Test func enteringCriticalOnAnOpenNotchPlaysTheCreditsLowClip() async {
         let box = SnapshotBox(snapshot(fraction: 0.5, sessions: [.working]))
-        let model = await makeModel(visibility: .onHover, box: box)
+        let model = await makeModel(visibility: .alwaysShow, box: box)
         #expect(model.peekClip == nil)
 
         box.snapshot = snapshot(fraction: 0.95, sessions: [.working])
@@ -106,7 +106,20 @@ struct MoodCueTests {
         #expect(model.peekClip == .creditsLow)
         #expect(model.peekClipStart != nil)
         #expect(model.peekCue == nil, "the authored clip replaces the computed uh-oh")
-        #expect(!model.isExpanded)
+    }
+
+    @Test func enteringCriticalInThePillKeepsTheUhOhCue() async {
+        let box = SnapshotBox(snapshot(fraction: 0.5, sessions: [.working]))
+        let model = await makeModel(visibility: .onHover, box: box)
+
+        box.snapshot = snapshot(fraction: 0.95, sessions: [.working])
+        model.store.refresh(.claude)
+        await settle(model)
+        #expect(model.mood == .critical)
+        // The clip only draws in the head; folded away, the pill's eyes play the cue instead.
+        #expect(model.peekClip == nil)
+        #expect(model.peekCue == .uhOh)
+        #expect(!model.isExpanded, "a mood beat never opens the notch")
     }
 
     @Test func aCueAfterAClipStopsTheClip() async {

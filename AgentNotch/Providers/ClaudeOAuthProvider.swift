@@ -4,85 +4,61 @@ import os
 nonisolated struct ClaudeOAuthProvider: UsageProvider {
     var id: ProviderID { .claude }
 
-    private static let credentialsService = "Claude Code-credentials"
-    private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
-    /// Keeps the keychain from prompting on every refresh when the user chose Allow instead of Always Allow.
-    private static let cache = OSAllocatedUnfairLock<OAuth?>(initialState: nil)
+    private static let cache = OSAllocatedUnfairLock<ClaudeOAuthSession?>(initialState: nil)
 
     func fetch() async throws -> ProviderSnapshot {
-        var oauth = try currentOAuth()
+        var session = try await currentSession()
         var data: Data
         do {
-            data = try await usage(with: oauth)
+            data = try await usage(with: session)
         } catch UsageProviderError.needsAuth {
-            // Claude Code may have rotated the token since we cached it; read it once more before giving up.
             Self.cache.withLock { $0 = nil }
-            oauth = try currentOAuth()
-            data = try await usage(with: oauth)
+            session = try await ClaudeOAuthLogin.refresh(session)
+            data = try await usage(with: session)
         }
         let root = try ProviderJSON.object(data)
         return ProviderSnapshot(
             id: .claude,
-            account: nil,
-            plan: oauth.subscriptionType.map(ProviderJSON.capitalised),
+            account: session.email,
+            plan: nil,
             windows: windows(from: root),
             sessions: ClaudeSessionMonitor.liveSessions(),
             fetchedAt: Date()
         )
     }
 
-    private func currentOAuth() throws -> OAuth {
-        if let cached = Self.cache.withLock({ $0 }), cached.expires > Date() {
-            return cached
-        }
-        let oauth = try readOAuth()
-        if oauth.expires < Date() {
-            throw UsageProviderError.needsAuth("Run Claude Code once to refresh its sign-in")
-        }
-        Self.cache.withLock { $0 = oauth }
-        return oauth
+    static func forgetSession() {
+        cache.withLock { $0 = nil }
     }
 
-    private func usage(with oauth: OAuth) async throws -> Data {
+    private func currentSession() async throws -> ClaudeOAuthSession {
+        if let cached = Self.cache.withLock({ $0 }), !cached.needsRefresh {
+            return cached
+        }
+        guard var session = try ClaudeOAuthStore.load() else {
+            throw UsageProviderError.needsAuth(ProviderID.claude.signInHint)
+        }
+        if session.needsRefresh {
+            session = try await ClaudeOAuthLogin.refresh(session)
+        }
+        let ready = session
+        Self.cache.withLock { $0 = ready }
+        return ready
+    }
+
+    private func usage(with session: ClaudeOAuthSession) async throws -> Data {
         try await ProviderHTTP.get(
-            url: Self.usageURL,
+            url: ClaudeOAuth.usageEndpoint,
             headers: [
-                "Authorization": "Bearer \(oauth.accessToken)",
+                "Authorization": "Bearer \(session.accessToken)",
                 "anthropic-beta": "oauth-2025-04-20",
                 "Accept": "application/json",
             ],
-            authFailed: "Sign in to Claude Code to read your usage"
+            authFailed: ProviderID.claude.signInHint
         )
     }
 
-    private nonisolated struct OAuth: Sendable {
-        var accessToken: String
-        var expiresAt: Double
-        var subscriptionType: String?
-
-        var expires: Date { Date(timeIntervalSince1970: expiresAt / 1000) }
-    }
-
-    private func readOAuth() throws -> OAuth {
-        guard let data = try Keychain.genericPassword(service: Self.credentialsService) else {
-            throw UsageProviderError.needsAuth("Sign in to Claude Code to read your usage")
-        }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let oauth = json["claudeAiOauth"] as? [String: Any],
-            let accessToken = oauth["accessToken"] as? String, !accessToken.isEmpty,
-            let expiresAt = ProviderJSON.double(oauth["expiresAt"])
-        else {
-            throw UsageProviderError.needsAuth("Sign in to Claude Code to read your usage")
-        }
-        let subscription = oauth["subscriptionType"] as? String
-        return OAuth(
-            accessToken: accessToken,
-            expiresAt: expiresAt,
-            subscriptionType: subscription.flatMap { $0.isEmpty ? nil : $0 }
-        )
-    }
-
-    private func windows(from root: [String: Any]) -> [LimitWindow] {
+    func windows(from root: [String: Any]) -> [LimitWindow] {
         var windows: [LimitWindow] = []
         if let window = bucketWindow(
             root["five_hour"],
@@ -119,7 +95,7 @@ nonisolated struct ClaudeOAuthProvider: UsageProvider {
         return windows
     }
 
-    private func bucketWindow(_ raw: Any?, id: String, label: String) -> LimitWindow? {
+    func bucketWindow(_ raw: Any?, id: String, label: String) -> LimitWindow? {
         guard let object = raw as? [String: Any],
             let utilization = ProviderJSON.double(object["utilization"])
         else { return nil }

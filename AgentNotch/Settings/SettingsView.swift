@@ -7,7 +7,11 @@ struct SettingsView: View {
     @Bindable var preferences: Preferences
     let store: UsageStore
     let updater: SPUUpdater
+    let onClaudeSignIn: () async throws -> Void
+    let onClaudeSignOut: () -> Void
 
+    @State private var claudeSigningIn = false
+    @State private var claudeError: String?
     private static let width: CGFloat = 460
 
     var body: some View {
@@ -32,7 +36,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Agent Notch")
                 .font(.system(size: 22, weight: .bold))
-            Text("Reads usage from the tools already signed in on this Mac and never signs in itself.")
+            Text("Cursor and Codex follow accounts already on this Mac. Claude uses Sign in with Claude.")
                 .settingsDetail()
         }
     }
@@ -47,19 +51,51 @@ struct SettingsView: View {
                         isEnabled: Binding(
                             get: { !preferences.hiddenProviders.contains(id) },
                             set: { preferences.setProvider(id, enabled: $0) }
-                        )
+                        ),
+                        signingIn: id == .claude && claudeSigningIn,
+                        onClaudeSignIn: claudeSignInHandler(for: id)
                     )
                 }
             }
-            Text("You stay signed in to the tool that owns each account. Switch accounts there and the notch follows.")
+            Text("Cursor and Codex stay signed in through those apps. Claude signs in here.")
                 .settingsDetail()
-            if !preferences.hiddenProviders.contains(.claude) {
-                Text(
-                    "Claude's token is read from Claude Code's keychain item. macOS asks once whether to allow that; choosing Always Allow keeps it quiet."
-                )
-                .settingsDetail()
+            if claudeIsSignedIn {
+                Button("Sign out of Claude") {
+                    claudeError = nil
+                    onClaudeSignOut()
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            }
+            if let claudeError {
+                Text(claudeError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var claudeIsSignedIn: Bool {
+        if case .needsAuth = store.status(for: .claude) { return false }
+        if case .ready = store.status(for: .claude) { return true }
+        return false
+    }
+
+    private func signInClaude() async {
+        claudeError = nil
+        claudeSigningIn = true
+        defer { claudeSigningIn = false }
+        do {
+            try await onClaudeSignIn()
+        } catch {
+            claudeError = error.localizedDescription
+        }
+    }
+
+    private func claudeSignInHandler(for id: ProviderID) -> (() async -> Void)? {
+        guard id == .claude else { return nil }
+        return { await signInClaude() }
     }
 
     private var placement: some View {
@@ -260,6 +296,8 @@ struct AccountRow: View {
     let id: ProviderID
     let status: ProviderStatus
     @Binding var isEnabled: Bool
+    var signingIn: Bool = false
+    var onClaudeSignIn: (() async -> Void)?
 
     var body: some View {
         SettingsCard {
@@ -285,12 +323,17 @@ struct AccountRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button {
-                    NSWorkspace.shared.open(id.manageURL)
+                    if let onClaudeSignIn, showsClaudeSignIn {
+                        Task { await onClaudeSignIn() }
+                    } else {
+                        NSWorkspace.shared.open(id.manageURL)
+                    }
                 } label: {
-                    Text(id.manageTitle).frame(width: 84)
+                    Text(buttonTitle).frame(width: 84)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(signingIn)
 
                 Toggle("", isOn: $isEnabled)
                     .toggleStyle(.switch)
@@ -298,6 +341,19 @@ struct AccountRow: View {
                     .labelsHidden()
             }
         }
+    }
+
+    private var showsClaudeSignIn: Bool {
+        guard onClaudeSignIn != nil else { return false }
+        if case .ready = status { return false }
+        if case .needsAuth = status { return true }
+        return false
+    }
+
+    private var buttonTitle: String {
+        if signingIn { return "Signing in" }
+        if showsClaudeSignIn { return "Sign in" }
+        return id.manageTitle
     }
 
     private var statusText: String {

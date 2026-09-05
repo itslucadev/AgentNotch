@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settings: SettingsWindowController!
     private var statusItem: StatusItemController!
     private var updater: AppUpdater!
+    private var recorder: NotchRecorder?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let preferences = Preferences()
@@ -35,7 +36,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
 
         settings = SettingsWindowController(
-            preferences: preferences, store: store, updater: updater.updater)
+            preferences: preferences,
+            store: store,
+            updater: updater.updater,
+            onClaudeSignIn: {
+                ClaudeOAuthStore.skipClaudeCodeImport = false
+                try await ClaudeOAuthLogin.signIn()
+                ClaudeOAuthProvider.forgetSession()
+                store.refresh(.claude)
+            },
+            onClaudeSignOut: {
+                ClaudeOAuthProvider.forgetSession()
+                ClaudeOAuthStore.clear()
+                ClaudeOAuthStore.skipClaudeCodeImport = true
+                store.refresh(.claude)
+            }
+        )
         let model = NotchViewModel(preferences: preferences, store: store)
         notch = NotchWindowController(model: model)
         let actions = MenuActions(
@@ -209,10 +225,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] note in
-            guard let raw = note.object as? String, let clip = PeekClip(rawValue: raw) else {
-                return
-            }
+            guard let raw = note.object as? String, let clip = PeekClip(rawValue: raw) else { return }
             self?.notch.model.previewClip(clip)
+        }
+        center.addObserver(
+            forName: Notification.Name("app.lucabecker.AgentNotch.recordScenario"),
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, let raw = note.object as? String,
+                let scenario = NotchRecorder.Scenario(rawValue: raw),
+                let path = note.userInfo?["directory"] as? String
+            else { return }
+            if recorder == nil { recorder = NotchRecorder(model: notch.model) }
+            recorder?.record(scenario, into: URL(fileURLWithPath: path))
         }
     }
 

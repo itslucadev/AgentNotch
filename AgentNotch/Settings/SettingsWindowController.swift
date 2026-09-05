@@ -7,12 +7,22 @@ final class SettingsWindowController {
     private let preferences: Preferences
     private let updater: SPUUpdater
     private let store: UsageStore
+    private let onClaudeSignIn: () async throws -> Void
+    private let onClaudeSignOut: () -> Void
     private var window: NSWindow?
 
-    init(preferences: Preferences, store: UsageStore, updater: SPUUpdater) {
+    init(
+        preferences: Preferences,
+        store: UsageStore,
+        updater: SPUUpdater,
+        onClaudeSignIn: @escaping () async throws -> Void,
+        onClaudeSignOut: @escaping () -> Void
+    ) {
         self.preferences = preferences
         self.store = store
         self.updater = updater
+        self.onClaudeSignIn = onClaudeSignIn
+        self.onClaudeSignOut = onClaudeSignOut
     }
 
     func show() {
@@ -25,7 +35,13 @@ final class SettingsWindowController {
 
     private func makeWindow() -> NSWindow {
         let hosting = NSHostingController(
-            rootView: SettingsView(preferences: preferences, store: store, updater: updater))
+            rootView: SettingsView(
+                preferences: preferences,
+                store: store,
+                updater: updater,
+                onClaudeSignIn: onClaudeSignIn,
+                onClaudeSignOut: onClaudeSignOut
+            ))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Agent Notch Settings"
         window.styleMask = [.titled, .closable, .fullSizeContentView]

@@ -17,7 +17,7 @@ nonisolated enum ProviderID: String, Codable, CaseIterable, Sendable, Identifiab
         }
     }
 
-    /// Where the account is managed. The notch never signs in itself.
+    /// Where the account is managed. Cursor and Codex stay in their own apps.
     var manageURL: URL {
         switch self {
         case .claude: URL(string: "https://claude.ai/settings/usage")!
@@ -37,7 +37,7 @@ nonisolated enum ProviderID: String, Codable, CaseIterable, Sendable, Identifiab
     /// Name of the tool that owns the credential on this Mac.
     var ownerTool: String {
         switch self {
-        case .claude: "Claude Code"
+        case .claude: "Claude"
         case .cursor: "Cursor"
         case .codex: "Codex"
         }
@@ -45,7 +45,7 @@ nonisolated enum ProviderID: String, Codable, CaseIterable, Sendable, Identifiab
 
     var signInHint: String {
         switch self {
-        case .claude: "Sign in to Claude Code to read your usage"
+        case .claude: "Sign in with Claude to read your usage"
         case .cursor: "Sign in to Cursor in the editor"
         case .codex: "Sign in to Codex to read your usage"
         }
@@ -155,7 +155,7 @@ nonisolated enum UsageProviderError: Error, Sendable {
     }
 }
 
-/// A usage source. Implementations read credentials already present on this Mac and never sign in.
+/// A usage source. Cursor and Codex read credentials already on this Mac. Claude signs in here.
 nonisolated protocol UsageProvider: Sendable {
     var id: ProviderID { get }
     func fetch() async throws -> ProviderSnapshot
