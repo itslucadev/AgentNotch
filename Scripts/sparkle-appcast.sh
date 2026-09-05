@@ -4,7 +4,7 @@ set -euo pipefail
 # Build a Sparkle appcast from a folder of archives.
 #
 # Usage:
-=#   Scripts/sparkle-appcast.sh <updates-folder> <download-url-prefix>
+#   Scripts/sparkle-appcast.sh <updates-folder> <download-url-prefix>
 #
 # Put AgentNotch.zip (or .dmg) in <updates-folder>. Optional matching
 # AgentNotch.md / AgentNotch.html becomes the release notes.
