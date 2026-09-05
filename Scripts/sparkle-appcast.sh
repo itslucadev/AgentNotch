@@ -4,27 +4,28 @@ set -euo pipefail
 # Build a Sparkle appcast from a folder of archives.
 #
 # Usage:
-#   Scripts/sparkle-appcast.sh <updates-folder> [download-url-prefix]
+=#   Scripts/sparkle-appcast.sh <updates-folder> <download-url-prefix>
 #
 # Put AgentNotch.zip (or .dmg) in <updates-folder>. Optional matching
 # AgentNotch.md / AgentNotch.html becomes the release notes.
 # The private EdDSA key is SPARKLE_ED_KEY_FILE, or .sparkle/ed-private-key.
 #
-# GitHub Releases host the zip. The website download button and
-# /agent-notch/appcast.xml both follow the latest GitHub release.
+# GitHub Releases host the zip and the appcast. Sparkle reads
+# releases/latest/download/appcast.xml. The website is only a download button.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KEY="${SPARKLE_ED_KEY_FILE:-$ROOT/.sparkle/ed-private-key}"
 SPARKLE_VERSION="2.9.6"
 TOOLS_DIR="$ROOT/.sparkle/Sparkle-$SPARKLE_VERSION"
 
-if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <updates-folder> [download-url-prefix]" >&2
+if [[ $# -lt 2 ]]; then
+  echo "usage: $0 <updates-folder> <download-url-prefix>" >&2
+  echo "example: $0 dist/updates https://github.com/itslucadev/AgentNotch/releases/download/v1.1/" >&2
   exit 1
 fi
 
 UPDATES="$1"
-PREFIX="${2:-https://github.com/itslucadev/AgentNotch/releases/latest/download/}"
+PREFIX="$2"
 
 if [[ ! -f "$KEY" ]]; then
   echo "missing Sparkle private key: $KEY" >&2
@@ -74,6 +75,5 @@ args=(
 echo
 echo "Appcast written in $UPDATES"
 echo "Upload AgentNotch.zip and appcast.xml to the GitHub release."
-echo "The running app reads https://lucabecker.dev/agent-notch/appcast.xml"
-echo "which proxies the latest GitHub appcast."
+echo "Sparkle reads https://github.com/itslucadev/AgentNotch/releases/latest/download/appcast.xml"
 echo "Tag vX.Y and push to publish the next update."

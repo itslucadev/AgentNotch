@@ -12,9 +12,9 @@ name: Release
 #   APPLE_API_ISSUER             issuer UUID
 #   SPARKLE_ED_PRIVATE_KEY       contents of .sparkle/ed-private-key
 #
-# The website download button and Sparkle feed both follow GitHub latest.
-# SUFeedURL stays https://lucabecker.dev/agent-notch/appcast.xml so 1.0
-# installs keep working; the site proxies that URL to this appcast.
+# Sparkle reads:
+#   https://github.com/itslucadev/AgentNotch/releases/latest/download/appcast.xml
+# Enclosure URLs are versioned (.../download/vX.Y/AgentNotch.zip).
 
 on:
   push:
