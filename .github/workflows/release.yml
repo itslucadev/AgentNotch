@@ -11,10 +11,11 @@ name: Release
 #   APPLE_API_KEY_ID             key id
 #   APPLE_API_ISSUER             issuer UUID
 #   SPARKLE_ED_PRIVATE_KEY       contents of .sparkle/ed-private-key
+#   WEBSITE_REPO_TOKEN           GitHub token with contents:write on personal-website
 #
-# Sparkle reads:
-#   https://github.com/itslucadev/AgentNotch/releases/latest/download/appcast.xml
-# Enclosure URLs are versioned (.../download/vX.Y/AgentNotch.zip).
+# Sparkle reads https://lucabecker.dev/agent-notch/appcast.xml
+# The zip lives on GitHub Releases. The appcast is committed to
+# personal-website (secret WEBSITE_REPO_TOKEN).
 
 on:
   push:
@@ -152,5 +153,29 @@ jobs:
           gh release create "${{ steps.ver.outputs.tag }}" \
             --title "${{ steps.ver.outputs.version }}" \
             --generate-notes \
-            "$RUNNER_TEMP/dist/AgentNotch.zip" \
-            "$RUNNER_TEMP/dist/appcast.xml"
+            "$RUNNER_TEMP/dist/AgentNotch.zip"
+
+      - name: Publish appcast to lucabecker.dev
+        env:
+          WEBSITE_REPO_TOKEN: ${{ secrets.WEBSITE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${WEBSITE_REPO_TOKEN}" ]]; then
+            echo "Set WEBSITE_REPO_TOKEN (repo contents:write on personal-website) to publish appcast.xml" >&2
+            exit 1
+          fi
+          tmp="$(mktemp -d)"
+          git clone --depth 1 \
+            "https://x-access-token:${WEBSITE_REPO_TOKEN}@github.com/itslucadev/personal-website.git" \
+            "$tmp/site"
+          mkdir -p "$tmp/site/public/agent-notch"
+          cp "$RUNNER_TEMP/dist/appcast.xml" "$tmp/site/public/agent-notch/appcast.xml"
+          git -C "$tmp/site" config user.name "github-actions[bot]"
+          git -C "$tmp/site" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$tmp/site" add public/agent-notch/appcast.xml
+          if git -C "$tmp/site" diff --cached --quiet; then
+            echo "appcast.xml unchanged"
+            exit 0
+          fi
+          git -C "$tmp/site" commit -m "Update Agent Notch appcast to ${{ steps.ver.outputs.tag }}"
+          git -C "$tmp/site" push origin HEAD:main

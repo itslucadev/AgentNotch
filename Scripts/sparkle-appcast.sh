@@ -10,8 +10,8 @@ set -euo pipefail
 # AgentNotch.md / AgentNotch.html becomes the release notes.
 # The private EdDSA key is SPARKLE_ED_KEY_FILE, or .sparkle/ed-private-key.
 #
-# GitHub Releases host the zip and the appcast. Sparkle reads
-# releases/latest/download/appcast.xml. The website is only a download button.
+# GitHub Releases host the zip. lucabecker.dev hosts appcast.xml.
+# Sparkle reads https://lucabecker.dev/agent-notch/appcast.xml.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KEY="${SPARKLE_ED_KEY_FILE:-$ROOT/.sparkle/ed-private-key}"
@@ -74,6 +74,6 @@ args=(
 
 echo
 echo "Appcast written in $UPDATES"
-echo "Upload AgentNotch.zip and appcast.xml to the GitHub release."
-echo "Sparkle reads https://github.com/itslucadev/AgentNotch/releases/latest/download/appcast.xml"
-echo "Tag vX.Y and push to publish the next update."
+echo "Upload AgentNotch.zip to the GitHub release."
+echo "Copy appcast.xml to personal-website/public/agent-notch/ (CI does this)."
+echo "Sparkle reads https://lucabecker.dev/agent-notch/appcast.xml"
