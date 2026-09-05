@@ -8,6 +8,9 @@
 #
 # Run from the AgentNotch repo root:
 #   Scripts/setup-release-secrets.sh
+#
+# Prepares this Mac for Scripts/release.sh. Does not upload signing
+# material to GitHub.
 
 set -euo pipefail
 
@@ -187,14 +190,15 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=4
+TOTAL_STAGES=3
 
 cd "$(dirname "$0")/.."
 
-banner "Agent Notch GitHub Release secrets"
+banner "Agent Notch local release setup"
 
 stage "Developer ID certificate"
-say "CI signs with Developer ID Application: Luca Becker (K3386R8W3F)."
+say "This Mac signs with Developer ID Application: Luca Becker (K3386R8W3F)."
+say "The certificate stays in your keychain. It is not uploaded to GitHub."
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
   note "This Mac already has a Developer ID Application identity."
 else
@@ -202,27 +206,15 @@ else
   open_url "https://developer.apple.com/account/resources/certificates/add"
   step "Choose Developer ID Application, request it from Keychain Access, then download and double-click the certificate."
   pause "Press Enter once the identity shows up in Keychain Access."
+  if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
+    SKIPPED+=("Developer ID Application identity")
+    warn "Still no Developer ID Application identity."
+  fi
 fi
 
-stage "Export the signing certificate for CI"
-say "GitHub needs a .p12 export of that Developer ID certificate."
-step "Open Keychain Access, select My Certificates, and find Developer ID Application: Luca Becker."
-step "Right-click it, Export, save as a .p12 on this Mac, and set a password you will paste next."
-pause "Press Enter after the .p12 is saved."
-ask P12_PATH "Path to the .p12 file:"
-P12_PATH="${P12_PATH/#\~/$HOME}"
-if [[ ! -f "$P12_PATH" ]]; then
-  warn "No file at $P12_PATH"
-  SKIPPED+=("MACOS_CERTIFICATE (export the .p12 and re-run)")
-else
-  MACOS_CERTIFICATE="$(base64 < "$P12_PATH" | tr -d '\n')"
-  ask_secret MACOS_CERTIFICATE_PASSWORD "Password you set on the .p12:"
-  set_secret MACOS_CERTIFICATE "$MACOS_CERTIFICATE"
-  set_secret MACOS_CERTIFICATE_PASSWORD "$MACOS_CERTIFICATE_PASSWORD"
-fi
-
-stage "App Store Connect API key for notarization"
-say "notarytool uses an App Store Connect API key, not your Apple ID password."
+stage "Notary credentials"
+say "notarytool stores an App Store Connect API key in your keychain as profile AgentNotch."
+say "The .p8 is not copied to GitHub or written into .env."
 open_url "https://appstoreconnect.apple.com/access/integrations/api"
 step "Users and Access -> Integrations -> App Store Connect API -> Generate API Key (Developer or Admin)."
 step "Copy the Key ID and Issuer ID, then download the .p8. Apple only shows the file once."
@@ -230,28 +222,67 @@ ask APPLE_API_KEY_ID "Paste the Key ID:"
 ask APPLE_API_ISSUER "Paste the Issuer ID:"
 ask P8_PATH "Path to the downloaded AuthKey_XXXX.p8:"
 P8_PATH="${P8_PATH/#\~/$HOME}"
+write_env NOTARY_PROFILE AgentNotch
 write_env APPLE_API_KEY_ID "$APPLE_API_KEY_ID"
 write_env APPLE_API_ISSUER "$APPLE_API_ISSUER"
-set_secret APPLE_API_KEY_ID "$APPLE_API_KEY_ID"
-set_secret APPLE_API_ISSUER "$APPLE_API_ISSUER"
 if [[ ! -f "$P8_PATH" ]]; then
   warn "No file at $P8_PATH"
-  SKIPPED+=("APPLE_API_KEY_P8 (download the .p8 and re-run)")
+  SKIPPED+=("notarytool profile AgentNotch (download the .p8 and re-run)")
 else
-  APPLE_API_KEY_P8="$(cat "$P8_PATH")"
-  set_secret APPLE_API_KEY_P8 "$APPLE_API_KEY_P8"
+  if xcrun notarytool store-credentials AgentNotch \
+      --key "$P8_PATH" \
+      --key-id "$APPLE_API_KEY_ID" \
+      --issuer "$APPLE_API_ISSUER"; then
+    note "Stored keychain profile AgentNotch."
+  else
+    SKIPPED+=("notarytool profile AgentNotch")
+    warn "notarytool store-credentials failed."
+  fi
 fi
 
 stage "Sparkle EdDSA private key"
-say "This is the key that signs appcast.xml. It already lives at .sparkle/ed-private-key."
+say "This key signs appcast.xml. It stays at .sparkle/ed-private-key on this Mac."
+EXPECTED_PUB="T3jmwY3shc3fTshx3FexcYVVrgs39iYTE01bUuAOo0E="
 if [[ -f .sparkle/ed-private-key ]]; then
-  note "Found .sparkle/ed-private-key. Uploading it as a GitHub secret."
-  SPARKLE_ED_PRIVATE_KEY="$(cat .sparkle/ed-private-key)"
-  set_secret SPARKLE_ED_PRIVATE_KEY "$SPARKLE_ED_PRIVATE_KEY"
+  note "Found .sparkle/ed-private-key. It is not uploaded to GitHub."
+  if PUB="$(KEY_FILE="$PWD/.sparkle/ed-private-key" swift - <<'SWIFT'
+import Foundation
+import CryptoKit
+let path = ProcessInfo.processInfo.environment["KEY_FILE"]!
+let raw = (try! String(contentsOfFile: path, encoding: .utf8))
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+guard let data = Data(base64Encoded: raw) else {
+    fputs("ed-private-key is not valid base64\n", stderr)
+    exit(1)
+}
+let seed: Data
+if data.count == 32 {
+    seed = data
+} else if data.count == 64 {
+    seed = Data(data.prefix(32))
+} else {
+    fputs("unexpected key length \(data.count)\n", stderr)
+    exit(1)
+}
+let key = try! Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+print(key.publicKey.rawRepresentation.base64EncodedString())
+SWIFT
+)"; then
+    if [[ "$PUB" == "$EXPECTED_PUB" ]]; then
+      note "Public key matches SUPublicEDKey."
+    else
+      warn "Derived public key does not match Config/Info.plist SUPublicEDKey."
+      SKIPPED+=("Sparkle public key mismatch")
+    fi
+  else
+    warn "Could not derive the public key (swift/CryptoKit)."
+    SKIPPED+=("Sparkle public key check")
+  fi
 else
   warn "Missing .sparkle/ed-private-key. Without it, Sparkle cannot sign updates."
-  SKIPPED+=("SPARKLE_ED_PRIVATE_KEY")
+  SKIPPED+=(".sparkle/ed-private-key")
 fi
 
 finish
-note "Next publish: commit the workflow, then git tag v1.1 && git push origin v1.1"
+note "Next publish: Scripts/release.sh v1.0"
+note "Sparkle feed: https://updates.lucabecker.dev/appcast.xml"

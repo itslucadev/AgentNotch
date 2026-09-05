@@ -1,0 +1,50 @@
+name: Deploy appcast
+
+# Sparkle reads https://updates.lucabecker.dev/appcast.xml
+# Source of truth is the `appcast` branch (appcast.xml + CNAME).
+# Signing and notarization happen on a Mac via Scripts/release.sh, not here.
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [deploy-appcast]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout appcast
+        uses: actions/checkout@v4
+        with:
+          ref: appcast
+
+      - name: Stage site
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          test -f appcast.xml
+          cp appcast.xml site/appcast.xml
+          if [[ -f CNAME ]]; then
+            cp CNAME site/CNAME
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>SUFeedURL</key>
-	<string>https://lucabecker.dev/agent-notch/appcast.xml</string>
+	<string>https://updates.lucabecker.dev/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>T3jmwY3shc3fTshx3FexcYVVrgs39iYTE01bUuAOo0E=</string>
 	<key>SUEnableAutomaticChecks</key>

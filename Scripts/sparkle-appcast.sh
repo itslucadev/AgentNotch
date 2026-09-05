@@ -10,12 +10,13 @@ set -euo pipefail
 # AgentNotch.md / AgentNotch.html becomes the release notes.
 # The private EdDSA key is SPARKLE_ED_KEY_FILE, or .sparkle/ed-private-key.
 #
-# GitHub Releases host the zip. lucabecker.dev hosts appcast.xml.
-# Sparkle reads https://lucabecker.dev/agent-notch/appcast.xml.
+# GitHub Releases host the zip. GitHub Pages hosts appcast.xml.
+# Sparkle reads https://updates.lucabecker.dev/appcast.xml.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KEY="${SPARKLE_ED_KEY_FILE:-$ROOT/.sparkle/ed-private-key}"
 SPARKLE_VERSION="2.9.6"
+SPARKLE_TARBALL_SHA256="52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192"
 TOOLS_DIR="$ROOT/.sparkle/Sparkle-$SPARKLE_VERSION"
 
 if [[ $# -lt 2 ]]; then
@@ -49,9 +50,19 @@ if [[ -z "$generate_appcast" ]]; then
   mkdir -p "$ROOT/.sparkle"
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
+  tarball="$tmp/Sparkle-${SPARKLE_VERSION}.tar.xz"
   echo "Downloading Sparkle $SPARKLE_VERSION tools…"
-  curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" \
-    | tar -xJ -C "$tmp"
+  curl -fsSL \
+    "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" \
+    -o "$tarball"
+  actual="$(shasum -a 256 "$tarball" | awk '{ print $1 }')"
+  if [[ "$actual" != "$SPARKLE_TARBALL_SHA256" ]]; then
+    echo "Sparkle tarball sha256 mismatch" >&2
+    echo "expected $SPARKLE_TARBALL_SHA256" >&2
+    echo "actual   $actual" >&2
+    exit 1
+  fi
+  tar -xJ -f "$tarball" -C "$tmp"
   found="$(find "$tmp" -name generate_appcast -type f | head -n 1)"
   if [[ -z "$found" ]]; then
     echo "Sparkle archive did not contain generate_appcast" >&2
@@ -75,5 +86,5 @@ args=(
 echo
 echo "Appcast written in $UPDATES"
 echo "Upload AgentNotch.zip to the GitHub release."
-echo "Copy appcast.xml to personal-website/public/agent-notch/ (CI does this)."
-echo "Sparkle reads https://lucabecker.dev/agent-notch/appcast.xml"
+echo "Commit appcast.xml on the appcast branch (Scripts/release.sh does this)."
+echo "Sparkle reads https://updates.lucabecker.dev/appcast.xml"

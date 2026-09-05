@@ -5,7 +5,7 @@ import AppKit
 ///
 /// Agent Notch often runs as a menu-bar accessory (`LSUIElement`), so Sparkle's
 /// standard alert would otherwise appear behind everything or not become key.
-final class AppUpdater: NSObject, SPUStandardUserDriverDelegate {
+final class AppUpdater: NSObject, SPUStandardUserDriverDelegate, SPUUpdaterDelegate {
     private(set) var controller: SPUStandardUpdaterController!
     private let restorePresence: () -> Void
 
@@ -17,7 +17,7 @@ final class AppUpdater: NSObject, SPUStandardUserDriverDelegate {
         super.init()
         controller = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: nil,
+            updaterDelegate: self,
             userDriverDelegate: self
         )
     }
@@ -25,6 +25,19 @@ final class AppUpdater: NSObject, SPUStandardUserDriverDelegate {
     func checkForUpdates() {
         controller.checkForUpdates(nil)
     }
+
+    #if DEBUG
+        func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+            guard updateCheck == .updatesInBackground else { return }
+            throw NSError(
+                domain: "app.lucabecker.AgentNotch.debug",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Debug builds skip scheduled production update checks."
+                ]
+            )
+        }
+    #endif
 
     func standardUserDriverWillHandleShowingUpdate(
         _ handleShowingUpdate: Bool,
